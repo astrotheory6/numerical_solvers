@@ -193,7 +193,7 @@ class Advection_1D():
         uh_values = self.evaluate_uh(t, points)
         uex_values = self.evaluate_uex(t)
 
-        dir = 'plots'
+        dir = 'plots/evals'
         fig1, ax1 = plt.subplots()
         ax1.plot(np.linspace(0, 1, 101), uex_values, label='uex')
         ax1.plot(points, uh_values, label='uh')
@@ -205,9 +205,9 @@ class Advection_1D():
 
         if not os.path.exists(dir):
             os.mkdir(os.path.join(dir))
-            fig1.savefig('plots/test' + str(t)+ '.png')
+            fig1.savefig('plots/evals/test' + str(t)+ '.png')
         else: 
-            fig1.savefig('plots/test' + str(t)+ '.png')
+            fig1.savefig('plots/evals/test' + str(t)+ '.png')
         plt.close(fig1)
 
     def plot_eval_at_all_timesteps(self, points):
@@ -258,7 +258,13 @@ class Advection_1D():
         plt.xlabel("x")
         plt.ylabel("t")
         plt.colorbar()
-        plt.savefig("eval_heatmap.png")
+
+        dir = 'plots'
+        if not os.path.exists(dir):
+            os.mkdir(os.path.join(dir))
+            plt.savefig('plots/eval_heatmap.png')
+        else: 
+            plt.savefig('plots/eval_heatmap.png')
     
     def plot_gradient_heatmap(self, points):
 
@@ -279,7 +285,13 @@ class Advection_1D():
         plt.xlabel("x")
         plt.ylabel("t")
         plt.colorbar()
-        plt.savefig("gradient_heatmap.png")
+
+        dir = 'plots'
+        if not os.path.exists(dir):
+            os.mkdir(os.path.join(dir))
+            plt.savefig('plots/gradient_heatmap.png')
+        else: 
+            plt.savefig('plots/gradient_heatmap.png')
     
     def plot_residual_heatmap(self, points):
 
@@ -300,4 +312,10 @@ class Advection_1D():
         plt.xlabel("x")
         plt.ylabel("t")
         plt.colorbar()
-        plt.savefig("residual_heatmap.png")
+
+        dir = 'plots'
+        if not os.path.exists(dir):
+            os.mkdir(os.path.join(dir))
+            plt.savefig('plots/residual_heatmap.png')
+        else: 
+            plt.savefig('plots/residual_heatmap.png')
