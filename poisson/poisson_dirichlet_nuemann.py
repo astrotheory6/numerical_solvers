@@ -57,7 +57,6 @@ error_max = MPI.COMM_WORLD.allreduce(error_max, op=MPI.MAX)
 print(f"Error_L2 : {L2_error:.2e}")
 print(f"Error_max : {error_max:.2e}")
 
-
 def evaluate_uh(x_points, y_points):
     
     points_transform = np.zeros((3, len(x_points)))

@@ -17,8 +17,6 @@ from matplotlib import pyplot as plt
 
 #import pyvista
 
-from utils import plot_fn_of_x
-
 from collections import OrderedDict
 
 
