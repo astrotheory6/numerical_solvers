@@ -1,98 +1,158 @@
-#from this import d
-from types import CellType
-import numpy as np
-import ufl
-from dolfinx import fem, io, mesh, plot
-from dolfinx.fem import FunctionSpace
-from dolfinx.fem.petsc import LinearProblem
-from dolfinx.mesh import (CellType, create_unit_cube, locate_entities_boundary,meshtags)
-from dolfinx import geometry
+
+# This demo program solves Poisson's equation
+#
+#     - div grad u(x, y) = f(x, y)
+#
+# on the unit square with homogeneous Dirichlet boundary conditions
+# at y = 0, 1 and periodic boundary conditions at x = 0, 1.
+#
+# Original implementation in DOLFIN by Kristian B. Oelgaard and Anders Logg
+# This implementation can be found at:
+# https://bitbucket.org/fenics-project/dolfin/src/master/python/demo/documented/periodic/demo_periodic.py
+#
+# Copyright (C) Jørgen S. Dokken 2020-2022.
+#
+# This file is part of DOLFINX_MPCX.
+#
+# SPDX-License-Identifier:    MIT
+
+from typing import Dict, Union
+
+import dolfinx.fem as fem
 import dolfinx_mpc.utils
-from dolfinx_mpc import MultiPointConstraint
+import numpy as np
+import scipy.sparse.linalg
 from dolfinx.common import Timer, TimingType, list_timings
-from ufl import ds, dx, grad, inner, SpatialCoordinate
+from dolfinx.io import VTXWriter
+from dolfinx.mesh import (CellType, create_unit_cube, locate_entities_boundary,
+                          meshtags)
+from dolfinx_mpc import LinearProblem
 from mpi4py import MPI
+from numpy.typing import NDArray
 from petsc4py import PETSc
-from matplotlib import pyplot as plt
-from collections import OrderedDict
-import os
+from ufl import (SpatialCoordinate, TestFunction, TrialFunction, as_vector, dx,
+                 exp, grad, inner, pi, sin)
 
-start = 0
-stop = 1
-num_intervals = 100
-delta_x = (start - stop) / num_intervals
-t = 0.0
-T = 2
-num_timesteps = 100
-ts = np.linspace(0, 1, num_timesteps+1)
-dt = (T - t) / num_timesteps
-adv = 0.4
-u0 = lambda x: np.sin(x[0])
-# u0 = lambda x: x[0] ** 2
+# Get PETSc int and scalar types
+complex_mode = True if np.dtype(PETSc.ScalarType).kind == 'c' else False
 
-degree = 1
-domain = mesh.create_unit_interval(MPI.COMM_WORLD, num_intervals)
-V = FunctionSpace(domain, ("CG", degree))
 
-u = ufl.TrialFunction(V)
-v = ufl.TestFunction(V)
+def demo_periodic3D(celltype: CellType):
+    # Create mesh and finite element
+    if celltype == CellType.tetrahedron:
+        # Tet setup
+        N = 2
+        mesh = create_unit_cube(MPI.COMM_WORLD, N, N, N)
+        V = fem.VectorFunctionSpace(mesh, ("CG", 1))
+    else:
+        # Hex setup
+        N = 10
+        mesh = create_unit_cube(MPI.COMM_WORLD, N, N, N, CellType.hexahedron)
+        V = fem.VectorFunctionSpace(mesh, ("CG", 2))
 
-ut = fem.Function(V)
-ut.interpolate(u0)
+    def dirichletboundary(x: NDArray[np.float64]) -> NDArray[np.bool_]:
+        return np.logical_or(np.logical_or(np.isclose(x[1], 0), np.isclose(x[1], 1)),
+                             np.logical_or(np.isclose(x[2], 0), np.isclose(x[2], 1)))
 
-a = (u + dt * adv * ufl.grad(u)[0])*v*ufl.dx
-L = ut * v * ufl.dx
+    # Create Dirichlet boundary condition
+    zero = PETSc.ScalarType([0, 0, 0])
+    geometrical_dofs = fem.locate_dofs_geometrical(V, dirichletboundary)
+    bc = fem.dirichletbc(zero, geometrical_dofs, V)
+    bcs = [bc]
 
-uh = fem.Function(V)
-uh.interpolate(u0)
+    def PeriodicBoundary(x):
+        return np.isclose(x[0], 1)
 
-bilinear = fem.form(a)
-linear = fem.form(L)
+    facets = locate_entities_boundary(mesh, mesh.topology.dim - 1, PeriodicBoundary)
+    arg_sort = np.argsort(facets)
+    mt = meshtags(mesh, mesh.topology.dim - 1, facets[arg_sort], np.full(len(facets), 2, dtype=np.int32))
 
-bcs = []
+    def periodic_relation(x):
+        out_x = np.zeros(x.shape)
+        out_x[0] = 1 - x[0]
+        out_x[1] = x[1]
+        out_x[2] = x[2]
+        return out_x
+    with Timer("~~Periodic: Compute mpc condition"):
+        mpc = dolfinx_mpc.MultiPointConstraint(V)
+        mpc.create_periodic_constraint_topological(V.sub(0), mt, 2, periodic_relation, bcs, 1)
+        mpc.finalize()
+    # Define variational problem
+    u = TrialFunction(V)
+    v = TestFunction(V)
+    a = inner(grad(u), grad(v)) * dx
 
-def periodic_boundary(x):
-    return np.array(np.isclose(x[0], 1))
+    x = SpatialCoordinate(mesh)
+    dx_ = x[0] - 0.9
+    dy_ = x[1] - 0.5
+    dz_ = x[2] - 0.1
+    f = as_vector((x[0] * sin(5.0 * pi * x[1])
+                   + 1.0 * exp(-(dx_ * dx_ + dy_ * dy_ + dz_ * dz_) / 0.02), 0.1 * dx_ * dz_, 0.1 * dx_ * dy_))
 
-def periodic_relation(x):
-    out_x = np.zeros(x.shape)
-    out_x[0] = 1 - x[0]
-    out_x[1] = x[1]
-    out_x[2] = x[2]
-    return out_x
+    rhs = inner(f, v) * dx
 
-facets = locate_entities_boundary(domain, domain.topology.dim - 1, periodic_boundary)
-arg_sort = np.argsort(facets)
-mt = meshtags(domain, domain.topology.dim - 1, facets[arg_sort], np.full(len(facets), 2, dtype=np.int32))
-print("dtype:", mt.values.dtype)
+    petsc_options: Dict[str, Union[str, float, int]]
+    if complex_mode:
+        rtol = 1e-16
+        petsc_options = {"ksp_type": "preonly", "pc_type": "lu"}
+    else:
+        rtol = 1e-8
+        petsc_options = {"ksp_type": "cg", "ksp_rtol": rtol, "pc_type": "hypre", "pc_hypre_type": "boomeramg",
+                         "pc_hypre_boomeramg_max_iter": 1, "pc_hypre_boomeramg_cycle_type": "v",
+                         "pc_hypre_boomeramg_print_statistics": 1}
+    problem = LinearProblem(a, rhs, mpc, bcs, petsc_options=petsc_options)
+    u_h = problem.solve()
+    print("UH:", u_h.x.array)
 
-with Timer("~PERIODIC: Initialize MPC"):
-    mpc = dolfinx_mpc.MultiPointConstraint(V)
-    mpc.create_periodic_constraint_topological(V, mt, 2, periodic_relation, bcs, 1.0)
-    mpc.finalize()
+    # --------------------VERIFICATION-------------------------
+    print("----Verification----")
+    u_ = fem.Function(V)
+    u_.x.array[:] = 0
+    org_problem = fem.petsc.LinearProblem(a, rhs, u=u_, bcs=bcs, petsc_options=petsc_options)
+    with Timer("~Periodic: Unconstrained solve"):
+        org_problem.solve()
+        it = org_problem.solver.getIterationNumber()
+    print(f"Unconstrained solver iterations: {it}")
 
-A = fem.petsc.assemble_matrix(bilinear, bcs=bcs)
-A.assemble()
-b = fem.petsc.create_vector(linear)
+    # Write solutions to file
+    ext = "tet" if celltype == CellType.tetrahedron else "hex"
+    u_.name = "u_" + ext + "_unconstrained"
 
-solver = PETSc.KSP().create(domain.comm)
-solver.setOperators(A)
-solver.setType(PETSc.KSP.Type.PREONLY)
-solver.getPC().setType(PETSc.PC.Type.LU)
+    # NOTE: Workaround as tabulate dof coordinates does not like extra ghosts
+    u_out = fem.Function(V)
+    old_local = u_out.x.map.size_local * u_out.x.bs
+    old_ghosts = u_out.x.map.num_ghosts * u_out.x.bs
+    mpc_local = u_h.x.map.size_local * u_h.x.bs
+    assert old_local == mpc_local
+    u_out.x.array[:old_local + old_ghosts] = u_h.x.array[:mpc_local + old_ghosts]
+    u_out.name = "u_" + ext
+    fname = f"results/demo_periodic3d_{ext}.bp"
+    out_periodic = VTXWriter(MPI.COMM_WORLD, fname, u_out)
+    out_periodic.write(0)
+    out_periodic.close()
 
-for i in range(num_timesteps):
-    t += dt
-    t = round(t, 4)
+    root = 0
+    with Timer("~Demo: Verification"):
+        dolfinx_mpc.utils.compare_mpc_lhs(org_problem.A, problem.A, mpc, root=root)
+        dolfinx_mpc.utils.compare_mpc_rhs(org_problem.b, problem.b, mpc, root=root)
 
-    # Update L reusing the initial vector
-    with b.localForm() as loc_b:
-        loc_b.set(0)
-    fem.petsc.assemble_vector(b, linear)
+        # Gather LHS, RHS and solution on one process
+        A_csr = dolfinx_mpc.utils.gather_PETScMatrix(org_problem.A, root=root)
+        K = dolfinx_mpc.utils.gather_transformation_matrix(mpc, root=root)
+        L_np = dolfinx_mpc.utils.gather_PETScVector(org_problem.b, root=root)
+        u_mpc = dolfinx_mpc.utils.gather_PETScVector(u_h.vector, root=root)
 
-    # set bcs, solve
-    fem.petsc.set_bc(b, bcs)
-    solver.solve(b, uh.vector)
-    uh.x.scatter_forward()
+        if MPI.COMM_WORLD.rank == root:
+            KTAK = K.T * A_csr * K
+            reduced_L = K.T @ L_np
+            # Solve linear system
+            d = scipy.sparse.linalg.spsolve(KTAK, reduced_L)
+            # Back substitution to full solution vector
+            uh_numpy = K @ d
+            assert np.allclose(uh_numpy, u_mpc, rtol=rtol)
 
-    # Update solution at previous time step (ut)
-    ut.x.array[:] = uh.x.array
+
+if __name__ == "__main__":
+    for celltype in [CellType.hexahedron, CellType.tetrahedron]:
+        demo_periodic3D(celltype)
+    list_timings(MPI.COMM_WORLD, [TimingType.wall])

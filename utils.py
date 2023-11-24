@@ -72,7 +72,7 @@ def divergence(f, delx):
     """
     num_dims = len(f)
 
-    if len(f.shape) == 1:
+    if len(np.array(f).shape) == 1:
         return np.gradient(f, delx)
     else:
         return np.ufunc.reduce(np.add, [np.gradient(f[i], delx, axis=i, edge_order=2) for i in range(num_dims)])

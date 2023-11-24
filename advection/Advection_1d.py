@@ -1,4 +1,6 @@
+from ast import Constant
 from types import CellType
+from unicodedata import east_asian_width
 import numpy as np
 import ufl
 from dolfinx import fem, io, mesh, plot
@@ -6,8 +8,10 @@ from dolfinx.fem import FunctionSpace
 from dolfinx.fem.petsc import LinearProblem
 from dolfinx.mesh import (CellType, create_unit_cube, locate_entities_boundary,meshtags)
 from dolfinx import geometry
-import dolfinx_mpc.utils
-from dolfinx_mpc import LinearProblem, MultiPointConstraint
+
+
+import dolfinx_mpc
+
 from dolfinx.common import Timer, TimingType, list_timings
 from ufl import ds, dx, grad, inner, SpatialCoordinate
 from mpi4py import MPI
@@ -16,16 +20,18 @@ from matplotlib import pyplot as plt
 from collections import OrderedDict
 import os
 import sys
-#sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 #import utils
 
 class Advection_1d():
-    def __init__(self, start, stop, num_intervals, t, T, num_timesteps, adv, degree, u0):
-        self.start = start
-        self.stop = stop
-        self.num_intervals = num_intervals
+    def __init__(self, x_start, x_end, nx, t, T, num_timesteps, adv, degree, u0):
+        self.x_start = x_start
+        self.x_end = x_end
+        self.nx = nx
 
-        self.delx = (self.start - self.stop) / self.num_intervals
+        self.xs = np.linspace(x_start, x_end, nx+1)
+
+        self.delx = (self.x_start - self.x_end) / self.nx
 
         self.t = t
         self.T = T
@@ -37,14 +43,13 @@ class Advection_1d():
 
         self.adv = adv
 
-        self.domain = mesh.create_unit_interval(MPI.COMM_WORLD, self.num_intervals)
+        self.domain = mesh.create_unit_interval(MPI.COMM_WORLD, self.nx)
         self.degree = degree
         
         # P1 = ufl.FiniteElement("Lagrange", ufl.interval, self.degree)
         # self.V = FunctionSpace(self.domain, P1)
 
-        self.V = fem.FunctionSpace(self.domain, ("CG", 1))
-
+        self.V = fem.FunctionSpace(self.domain, ("CG", degree))
 
         self.u0 = u0
        
@@ -54,24 +59,42 @@ class Advection_1d():
 
     def populate_dict_uex(self):
         d = {}
-        for step in self.ts:
+        for t in self.ts:
             uex = fem.Function(self.V)
-            uex.interpolate(lambda x: self.u0(x - self.adv * step))
-            d[step] = uex
+            uex.interpolate(lambda x: self.u0(x - self.adv * t))
+            d[t] = uex
 
         return d
+
+    # def generate_pbc_slave_to_master_map(self, i):
+    #     def pbc_slave_to_master_map(x):
+    #         out_x = x.copy()
+    #         out_x[i] = x[i] - self.x_end
+    #         return out_x
+    #     return pbc_slave_to_master_map
+
+    # def generate_pbc_is_slave(self, i):
+    #     return lambda x: np.isclose(x[i], self.x_end)
+
+    # def generate_pbc_is_master(self, i):
+    #     return lambda x: np.isclose(x[i], 0.0)
     
     def solve(self):
 
         u = ufl.TrialFunction(self.V)
         v = ufl.TestFunction(self.V)
 
+        u_0 = fem.Function(self.V)
+        u_0.interpolate(self.u0)
         ut = fem.Function(self.V)
-        ut.interpolate(self.u0)
+        ut.x.array[:] = u_0.x.array
+        # ut.interpolate(self.u0)
 
         x = SpatialCoordinate(self.domain)
 
-        a = (u + self.dt * self.adv * ufl.grad(u)[0])*v*ufl.dx
+        # a = (u + self.dt * self.adv * ufl.grad(u)[0])*v*ufl.dx
+        # a = (u*v*ufl.dx) + (self.dt * self.adv * np.inner(v, ufl.grad(u)[0]) * ufl.dx)
+        a = (u + self.dt * self.adv * ufl.grad(u)[0]) * v * ufl.dx
         L = ut * v * ufl.dx
 
         uh = fem.Function(self.V)
@@ -84,10 +107,8 @@ class Advection_1d():
         bilinear = fem.form(a)
         linear = fem.form(L)
 
-
         def dirichletboundary(x):
             return np.logical_or(np.isclose(x[1], 0), np.isclose(x[1], 1))
-
 
         # Create Dirichlet boundary condition
         # facets = mesh.locate_entities_boundary(self.domain, self.domain.geometry.dim - 1, dirichletboundary)
@@ -98,13 +119,13 @@ class Advection_1d():
         bcs = []
 
         def periodic_boundary(x):
-            return np.array(np.isclose(x[0], 1))
+            return np.isclose(x[0], 1)
 
         def periodic_relation(x):
             out_x = np.zeros(x.shape)
             out_x[0] = 1 - x[0]
             out_x[1] = x[1]
-            out_x[2] = x[2]
+            # out_x[2] = x[2]
             return out_x
 
         V = self.V
@@ -138,9 +159,9 @@ class Advection_1d():
             t += dt
             t = round(t, 4)
 
-            L = ut * v * ufl.dx
-            linear = fem.form(L)
-            b = fem.petsc.create_vector(linear)
+            # L = ut * v * ufl.dx
+            # linear = fem.form(L)
+            # b = fem.petsc.create_vector(linear)
 
             # Update L reusing the initial vector
             with b.localForm() as loc_b:
@@ -149,8 +170,13 @@ class Advection_1d():
 
             # set bcs, solve
             fem.petsc.set_bc(b, bcs)
-            #solver.convergence_criterion = "residual"
-            solver.solve(b, uh.vector)
+            petsc_options = {"ksp_type": "preonly", "pc_type": "lu"}
+            # petsc_options = {"ksp_type": "cg", "pc_type": "hypre"}
+
+            problem = dolfinx_mpc.LinearProblem(a, L, mpc, bcs, petsc_options=petsc_options)
+            uh = problem.solve()
+            print("t:", t)
+            print(uh.x.array)
             uh.x.scatter_forward()
 
             # print L2-error metric
@@ -159,36 +185,36 @@ class Advection_1d():
             L2_error = np.sqrt(self.domain.comm.allreduce(error, op=MPI.SUM))
  
             L2_errors_per_timestep[t] = L2_error
-            #print("t=", t, "L2:", L2_error)
+            print("L2:", L2_error)
 
             error_max = np.max(np.abs(uex.x.array-uh.x.array))
-            #print("max difference between dofs:", error_max)
+            print("max difference between dofs:", error_max)
+
+            # Update solution at previous time step (ut)
+            ut.x.array[:] = uh.x.array
 
             # store solved in dict at timestep
             copy = fem.Function(self.V)
             copy.x.array[:] = uh.x.array
             self.dict_of_uh[t] = copy
-
-            # Update solution at previous time step (ut)
-            ut.x.array[:] = uh.x.array
        
         return self.dict_of_uh, L2_errors_per_timestep
 
 
-    def evaluate_uh(self, t, points):
+    def evaluate_uh(self, t):
         uh = self.dict_of_uh[t]
 
-        points_transform = np.zeros((len(points), 3))
-        points_transform[:, 0] = points
+        ps = np.zeros((len(self.xs), 3))
+        ps[:, 0] = self.xs
 
         cells = []
         points_on_proc = []
 
         bb_tree = geometry.BoundingBoxTree(self.domain, self.domain.topology.dim)
 
-        cell_candidates = geometry.compute_collisions(bb_tree, points_transform) # Find cells whose bounding-box collide with the the points
-        colliding_cells = geometry.compute_colliding_cells(self.domain, cell_candidates, points_transform) # Choose one of the cells that contains the point
-        for i, point in enumerate(points_transform):
+        cell_candidates = geometry.compute_collisions(bb_tree, ps) # Find cells whose bounding-box collide with the the points
+        colliding_cells = geometry.compute_colliding_cells(self.domain, cell_candidates, ps) # Choose one of the cells that contains the point
+        for i, point in enumerate(ps):
             if len(colliding_cells.links(i))>0:
                 points_on_proc.append(point)
                 cells.append(colliding_cells.links(i)[0])   
@@ -197,37 +223,59 @@ class Advection_1d():
 
         return uh_eval
 
-    def evaluate_uex(self, t, points):
+    def evaluate_uex(self, t):
         uex = self.dict_of_uex[t]
 
-        points_transform = np.zeros((3, len(points)))
-        points_transform[0] = points
+        ps = np.zeros((len(self.xs), 3))
+        ps[:, 0] = self.xs
 
         cells = []
         points_on_proc = []
 
         bb_tree = geometry.BoundingBoxTree(self.domain, self.domain.topology.dim)
 
-        cell_candidates = geometry.compute_collisions(bb_tree, points_transform.T) # Find cells whose bounding-box collide with the the points
-        colliding_cells = geometry.compute_colliding_cells(self.domain, cell_candidates, points_transform.T) # Choose one of the cells that contains the point
-        for i, point in enumerate(points_transform.T):
+        cell_candidates = geometry.compute_collisions(bb_tree, ps) # Find cells whose bounding-box collide with the the points
+        colliding_cells = geometry.compute_colliding_cells(self.domain, cell_candidates, ps) # Choose one of the cells that contains the point
+        for i, point in enumerate(ps):
             if len(colliding_cells.links(i))>0:
                 points_on_proc.append(point)
-                cells.append(colliding_cells.links(i)[0])   
+                cells.append(colliding_cells.links(i)[0])    
 
         uex_eval = uex.eval(points_on_proc, cells)
 
         return uex_eval
-    
-    def plot_eval_at_t(self, t, points):
 
-        uh_values = self.evaluate_uh(t, points)
-        uex_values = self.evaluate_uex(t, points)
+    def construct_uh_eval_cube(self):
+
+        xs = self.xs
+        cube = np.zeros((self.num_timesteps+1, len(xs)))
+        for k, t in enumerate(self.ts):
+            e = self.evaluate_uh(t)
+            e_tf = [q[0] for q in e]
+            cube[-k-1] = e_tf
+
+        return cube # (num_timesteps, nx+1) 
+
+    def construct_uex_eval_cube(self):
+
+        xs = self.xs
+        cube = np.zeros((self.num_timesteps+1, len(xs)))
+        for k, t in enumerate(self.ts):
+            e = self.evaluate_uex(t)
+            e_tf = [q[0] for q in e]
+            cube[-k-1] = e_tf
+
+        return cube # (num_timesteps, nx+1) 
+    
+    def plot_eval_at_t(self, t):
+
+        uh_values = self.evaluate_uh(t)
+        uex_values = self.evaluate_uex(t)
 
         dir = 'plots/evals'
         fig1, ax1 = plt.subplots()
-        ax1.plot(points, uex_values, label='uex')
-        ax1.plot(points, uh_values, label='uh')
+        ax1.plot(self.xs, uex_values, label='uex')
+        ax1.plot(self.xs, uh_values, label='uh')
         ax1.legend()
 
         ax1.set(ylim=(-1, 1))
@@ -241,144 +289,66 @@ class Advection_1d():
             fig1.savefig('plots/evals/test' + str(t)+ '.png')
         plt.close(fig1)
 
-    def plot_eval_at_all_timesteps(self, points):
+    def plot_eval_at_all_timesteps(self):
 
         self.dict_of_uh.keys()
-        for step in self.dict_of_uh.keys():
+        for t in self.dict_of_uh.keys():
             #uh_values, uex_values = self.evaluate(self, step, points)
-            self.plot_eval_at_t(step, points)
+            self.plot_eval_at_t(t)
 
-    def residual_uh(self, t, points, delx):
+    def residual_uh(self):
         dt = self.dt
         adv = self.adv
 
-        """if t == 0:
-            uh_values = self.evaluate_uh(t, points)
-            uh_values_transform = [q[0] for q in uh_values]
+        uh_eval_cube = self.construct_uh_eval_cube()
 
-            du_dt = 0
-            #du_dt = self.T / self.num_timesteps
+        du_dt = np.gradient(uh_eval_cube, self.dt, axis=0, edge_order=2)
+        du_dx = np.gradient(uh_eval_cube, self.delx, axis=1, edge_order=2)
 
-            r = du_dt + adv * np.gradient(uh_values_transform, delx)
-            residual = np.mean(np.abs(r))
-            return residual
+        r = du_dt + adv * du_dx
+        print("uh r:", np.mean(np.abs(r)))
+        # print(r)
 
-        else: 
-            uh_values = self.evaluate_uh(t, points)
-            u_hminus1_values = self.evaluate_uh(np.round(t-self.dt, 4), points)
+        return r
 
-            uh_values_transform = np.array([p[0] for p in uh_values])
-            uhminus1_values_transform = np.array([q[0] for q in u_hminus1_values])
-
-            du_dt = np.gradient(uh_values_transform, self.dt)
-
-            r = du_dt + adv * np.gradient(uh_values_transform, delx)
-            residual = np.mean(np.abs(r))
-
-            return residual"""
-        uh_values = self.evaluate_uh(t, points)
-        u_hminus1_values = self.evaluate_uh(np.round(t, 4), points)
-
-        uh_values_transform = np.array([p[0] for p in uh_values])
-        uhminus1_values_transform = np.array([q[0] for q in u_hminus1_values])
-
-        du_dt = np.gradient(uh_values_transform, self.dt)
-
-        print("du_dt h:", du_dt)
-
-        r = du_dt + adv * np.gradient(uh_values_transform, delx)
-        print(r)
-        residual = np.mean(np.abs(r))
-        return residual
-
-    def residual_uex(self, t, points, delx):
+    def residual_uex(self):
         dt = self.dt
         adv = self.adv
 
-        """if t == 0:
-            uex_values = self.evaluate_uex(t, points)
-            uex_values_transform = [q[0] for q in uex_values]
+        uex_eval_cube = self.construct_uex_eval_cube()
 
-            du_dt = 0
-            #du_dt = self.T / self.num_timesteps
+        du_dt = np.gradient(uex_eval_cube, dt, axis=0, edge_order=2)
+        du_dx = np.gradient(uex_eval_cube, self.delx, axis=1, edge_order=2)
 
-            r = du_dt + adv * np.gradient(uex_values_transform, delx)
-            residual = np.mean(np.abs(r))
+        r = du_dt + adv * du_dx
+        print("uex r:", np.mean(np.abs(r)))
+        # print(r)
 
-            return residual
+        return r
 
-        else: 
-            uh_values = self.evaluate_uex(t, points)
-            u_hminus1_values = self.evaluate_uex(np.round(t-self.dt, 4), points)
+    def plot_eval_heatmap(self):
 
-            uh_values_transform = np.array([p[0] for p in uh_values])
-            uhminus1_values_transform = np.array([q[0] for q in u_hminus1_values])
+        dt = self.dt
+        adv = self.adv
 
-            du_dt = np.gradient(uh_values_transform, self.dt)
+        uh_eval_cube = self.construct_uh_eval_cube()
+        uex_eval_cube = self.construct_uex_eval_cube()
 
-            r = du_dt + adv * np.gradient(uh_values_transform, delx)
-            residual = np.mean(np.abs(r))
-
-            return residual"""
-
-        uex_values = self.evaluate_uex(t, points)
-        u_exminus1_values = self.evaluate_uex(np.round(t, 4), points)
-
-        uex_values_transform = np.array([p[0] for p in uex_values])
-        uexminus1_values_transform = np.array([q[0] for q in u_exminus1_values])
-
-        du_dt = np.gradient(uex_values_transform, self.dt)
-
-        print("du_dt ex:", du_dt)
-
-        r = du_dt + adv * np.gradient(uex_values_transform, delx)
-        residual = np.mean(np.abs(r))
-
-        return residual
-
-    def plot_residual_uh_over_all_ts(self, points, delx):
-
-        rs = [self.residual_uh(t, points, delx) for t in self.dict_of_uh.keys()]
-
-        fig1, ax1 = plt.subplots()
-        ax1.plot(self.dict_of_uh.keys(), rs, label='residual')
-        ax1.legend()
-        ax1.set_ylabel('residual')
-        ax1.set_xlabel('time')
-        ax1.set_yscale("log")
-
-
-        fig1.savefig('residuals.png')
-
-    def plot_eval_heatmap(self, points):
-
-        vh = np.zeros((self.num_timesteps+1, self.num_intervals+1))
-        vex = np.zeros((self.num_timesteps+1, self.num_intervals+1))
-
-        for i, time in enumerate(self.dict_of_uh.keys()):
-            eh = self.evaluate_uh(time, points)
-            eh_transform = [q[0] for q in eh]
-            vh[-i-1, :] = eh_transform
-
-            eex = self.evaluate_uex(time, points)
-            eex_transform = [q[0] for q in eex]
-            vex[-i-1, :] = eex_transform
-
-
-        #print("v:", v)
         fig, ax = plt.subplots(1, 2)
 
-        fig1 = ax[0].imshow(vh, cmap='viridis', extent=[0, 1, 0, 2])
-        fig2 = ax[1].imshow(vex, cmap='viridis', extent=[0, 1, 0, 2])
+        fig0 = ax[0].imshow(uh_eval_cube, cmap='viridis', extent=[0, 1, 0, 2])
+        fig1 = ax[1].imshow(uex_eval_cube, cmap='viridis', extent=[0, 1, 0, 2])
 
         ax[0].set_title('solution eval')
-        ax[1].set_title('analytical eval')
+        ax[1].set_title('exact eval')
 
         ax[0].set_xlabel("x")
         ax[1].set_ylabel("t")
 
-        cbar0 = fig.colorbar(fig1, ax=ax[0], shrink=0.4)
-        cbar1 = fig.colorbar(fig2, ax=ax[1], shrink=0.4)
+        cbar0 = fig.colorbar(fig0, ax=ax[0], shrink=0.4)
+        fig0.set_clim(vmin=-1, vmax=1)
+        cbar1 = fig.colorbar(fig1, ax=ax[1], shrink=0.4)
+        fig1.set_clim(vmin=-1, vmax=1)
 
         fig.tight_layout()
 
@@ -389,30 +359,18 @@ class Advection_1d():
         else: 
             plt.savefig('plots/eval_heatmap.png')
     
-    def plot_gradient_heatmap(self, points):
+    def plot_gradient_heatmap(self):
         
-        vh = np.zeros((self.num_timesteps+1, self.num_intervals+1))
-        vex = np.zeros((self.num_timesteps+1, self.num_intervals+1))
+        uh_eval_cube = self.construct_uh_eval_cube()
+        uex_eval_cube = self.construct_uex_eval_cube()
 
-
-        for i, time in enumerate(self.dict_of_uh.keys()):
-            eh = self.evaluate_uh(time, points)
-            eh_transform = [m[0] for m in eh]
-            vh[-i-1, :] = np.gradient(eh_transform, self.delx)
-
-            eex = self.evaluate_uex(time, points)
-            eex_transform = [m[0] for m in eex]
-            vex[-i-1, :] = np.gradient(eex_transform, self.delx)
-
-        #print("v:", v)
-        #fig = plt.figure()
-        #plt.rcParams["figure.figsize"] = [3.50, 3.50]
-        #plt.imshow(v, cmap='viridis', extent=[0, 1, 0, 2])
+        grad_uh = np.gradient(uh_eval_cube, axis=1, edge_order=2)
+        grad_uex = np.gradient(uex_eval_cube, axis=1, edge_order=2)
 
         fig, ax = plt.subplots(1, 2)
 
-        fig1 = ax[0].imshow(vh, cmap='viridis', extent=[0, 1, 0, 2])
-        fig2 = ax[1].imshow(vex, cmap='viridis', extent=[0, 1, 0, 2])
+        fig1 = ax[0].imshow(grad_uh, cmap='viridis', extent=[0, 1, 0, 2])
+        fig2 = ax[1].imshow(grad_uex, cmap='viridis', extent=[0, 1, 0, 2])
 
         ax[0].set_title('solution gradient')
         ax[1].set_title('analytical gradient')
@@ -432,26 +390,18 @@ class Advection_1d():
         else: 
             plt.savefig('plots/gradient_heatmap.png')
     
-    def plot_residual_heatmap(self, points, delx):
+    def plot_residual_heatmap(self):
 
-        vh = np.zeros((self.num_timesteps+1, self.num_intervals+1))
-        vex = np.zeros((self.num_timesteps+1, self.num_intervals+1))
+        uh_residual_cube = self.residual_uh()
+        uex_residual_cube = self.residual_uex()
 
-
-        for i, time in enumerate(self.dict_of_uh.keys()):
-            #eh = self.evaluate_uh(time, points)
-            #eh_transform = [m[0] for m in eh]
-            vh[-i-1, :] = self.residual_uh(time, points, delx)
-            vex[-i-1, :] = self.residual_uex(time, points, delx)
-
-        #print("v:", v)
         fig, ax = plt.subplots(1, 2)
 
-        fig1 = ax[0].imshow(vh, cmap='viridis', extent=[0, 1, 0, 2])
-        fig2 = ax[1].imshow(vex, cmap='viridis', extent=[0, 1, 0, 2])
+        fig1 = ax[0].imshow(uh_residual_cube, cmap='viridis', extent=[0, 1, 0, 2])
+        fig2 = ax[1].imshow(uex_residual_cube, cmap='viridis', extent=[0, 1, 0, 2])
 
-        ax[0].set_title('solution residual')
-        ax[1].set_title('analytical residual')
+        ax[0].set_title('solver residual')
+        ax[1].set_title('exact residual')
 
         ax[0].set_xlabel("x")
         ax[1].set_ylabel("t")

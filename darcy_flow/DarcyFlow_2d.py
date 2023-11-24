@@ -80,8 +80,10 @@ class DarcyFlow_2d():
         a = (-ufl.inner(ufl.grad(self.k * v), ufl.grad(u)) + ufl.inner(ufl.grad(self.k), ufl.grad(u)) * v) * ufl.dx
         L = -self.f * v * ufl.dx
 
+        # l = ["jacobi", "bjacobi", "sor", "eisenstat", "icc", "ilu", "asm", "gasm", "gamg", "bddc", "ksp", "composite", "lu", "cholesky", "none"]
+        
         # problem = LinearProblem(a, L, bcs=bcs, petsc_options={"ksp_type": "preonly", "pc_type": "lu" })
-        problem = LinearProblem(a, L, bcs=bcs, petsc_options={"ksp_type": "gmres"})
+        problem = LinearProblem(a, L, bcs=bcs, petsc_options={"ksp_type": "richardson", "pc_type": "ksp"})
 
         copy = fem.Function(self.V)
         copy = problem.solve()
@@ -91,9 +93,8 @@ class DarcyFlow_2d():
         viewer = PETSc.Viewer().createASCII("solver_output.txt")
         solver.view(viewer)
         solver_output = open("solver_output.txt", "r")
-        for line in solver_output.readlines():
-            print(line)
-
+        # for line in solver_output.readlines():
+        #      print(line)
 
         # NON LINEAR SOLVE
         # u = fem.Function(self.V)

@@ -4,6 +4,12 @@ __pycache__/
 *$py.class
 datasets/
 plots/
+evals/
+
+advection/plots
+diffusion-reaction/plots
+darcy_flow/plots
+poisson/plots
 
 *.png
 

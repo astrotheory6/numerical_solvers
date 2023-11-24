@@ -1,15 +1,15 @@
-KSP Object: (dolfinx_solve_140594272432096) 1 MPI processes
+KSP Object: (dolfinx_solve_140450346870192) 1 MPI process
   type: richardson
     damping factor=1.
   maximum iterations=10000, initial guess is zero
   tolerances:  relative=1e-05, absolute=1e-50, divergence=10000.
   left preconditioning
   using PRECONDITIONED norm type for convergence test
-PC Object: (dolfinx_solve_140594272432096) 1 MPI processes
+PC Object: (dolfinx_solve_140450346870192) 1 MPI process
   type: ksp
     KSP and PC on KSP preconditioner follow
     ---------------------------------
-    KSP Object: (dolfinx_solve_140594272432096ksp_) 1 MPI processes
+    KSP Object: (dolfinx_solve_140450346870192ksp_) 1 MPI process
       type: gmres
         restart=30, using Classical (unmodified) Gram-Schmidt Orthogonalization with no iterative refinement
         happy breakdown tolerance 1e-30
@@ -17,7 +17,7 @@ PC Object: (dolfinx_solve_140594272432096) 1 MPI processes
       tolerances:  relative=1e-05, absolute=1e-50, divergence=10000.
       left preconditioning
       using PRECONDITIONED norm type for convergence test
-    PC Object: (dolfinx_solve_140594272432096ksp_) 1 MPI processes
+    PC Object: (dolfinx_solve_140450346870192ksp_) 1 MPI process
       type: ilu
         out-of-place factorization
         0 levels of fill
@@ -25,14 +25,14 @@ PC Object: (dolfinx_solve_140594272432096) 1 MPI processes
         matrix ordering: natural
         factor fill ratio given 1., needed 1.
           Factored matrix follows:
-            Mat Object: 1 MPI processes
+            Mat Object: (dolfinx_solve_140450346870192ksp_) 1 MPI process
               type: seqaij
               rows=90601, cols=90601
               package used to perform factorization: petsc
               total: nonzeros=1442401, allocated nonzeros=1442401
                 not using I-node routines
       linear system matrix = precond matrix:
-      Mat Object: (dolfinx_solve_140594272432096) 1 MPI processes
+      Mat Object: (dolfinx_solve_140450346870192) 1 MPI process
         type: seqaij
         rows=90601, cols=90601
         total: nonzeros=1442401, allocated nonzeros=1442401
@@ -40,7 +40,7 @@ PC Object: (dolfinx_solve_140594272432096) 1 MPI processes
           not using I-node routines
     ---------------------------------
   linear system matrix = precond matrix:
-  Mat Object: (dolfinx_solve_140594272432096) 1 MPI processes
+  Mat Object: (dolfinx_solve_140450346870192) 1 MPI process
     type: seqaij
     rows=90601, cols=90601
     total: nonzeros=1442401, allocated nonzeros=1442401
