@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 
 # np.set_printoptions(suppress=True)
 
-np.random.seed(58585)
+np.random.seed(21)
 
 x_start = 0
 x_end = 1

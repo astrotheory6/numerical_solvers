@@ -95,7 +95,7 @@ class Advection_1d():
         # a = (u + self.dt * self.adv * ufl.grad(u)[0])*v*ufl.dx
         # a = (u*v*ufl.dx) + (self.dt * self.adv * np.inner(v, ufl.grad(u)[0]) * ufl.dx)
         a = (u + self.dt * self.adv * ufl.grad(u)[0]) * v * ufl.dx
-        L = ut * v * ufl.dx
+        L = (2 * self.dt + ut) * v * ufl.dx
 
         uh = fem.Function(self.V)
         uh.interpolate(self.u0)
@@ -175,8 +175,6 @@ class Advection_1d():
 
             problem = dolfinx_mpc.LinearProblem(a, L, mpc, bcs, petsc_options=petsc_options)
             uh = problem.solve()
-            print("t:", t)
-            print(uh.x.array)
             uh.x.scatter_forward()
 
             # print L2-error metric
